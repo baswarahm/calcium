@@ -65,7 +65,7 @@ memory that all persist across page reloads.
 - **Help modal** — reference sections for every mode, with worked examples.
 
 ---
-## 5. Notes on scope
+## Notes on scope
 
 `matrix.js`'s determinant/inverse routines use cofactor expansion, which is
 correct and simple for the 2×2/3×3 sizes exposed in the UI (and works for
