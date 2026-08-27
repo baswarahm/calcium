@@ -1,0 +1,57 @@
+/* ==========================================================================
+   themes.css — dark (default) and light theme tokens
+   ========================================================================== */
+
+body[data-theme="dark"] {
+  --bg: #12151c;
+  --surface: #191d26;
+  --surface-2: #20242f;
+  --surface-3: #2a3040;
+  --border: #2e3547;
+  --text: #e8ecf3;
+  --text-dim: #8b93a8;
+  --text-faint: #565e72;
+
+  --accent: #f2a93b;
+  --accent-2: #4fd6d0;
+  --accent-red: #ef6461;
+  --accent-green: #6fcf97;
+
+  --display-bg: #0e1117;
+  --display-scanline: rgba(242, 169, 59, 0.025);
+
+  --graph-grid: #262c3a;
+  --graph-axis: #59617a;
+
+  color-scheme: dark;
+}
+
+body[data-theme="light"] {
+  --bg: #eef1f5;
+  --surface: #ffffff;
+  --surface-2: #f4f6fa;
+  --surface-3: #e8ecf2;
+  --border: #d7dce6;
+  --text: #1a2130;
+  --text-dim: #5b6478;
+  --text-faint: #99a1b3;
+
+  --accent: #b9750f;
+  --accent-2: #0f8f89;
+  --accent-red: #c9433f;
+  --accent-green: #1f8a52;
+
+  --display-bg: #fbfcfe;
+  --display-scanline: rgba(15, 143, 137, 0.035);
+
+  --graph-grid: #e2e6ee;
+  --graph-axis: #9aa2b5;
+
+  color-scheme: light;
+}
+
+body[data-theme="light"] .result-value { text-shadow: none; }
+body[data-theme="light"] .led-btn[aria-pressed="true"] { color: #fff; }
+body[data-theme="light"] .btn-equals { color: #fff; }
+body[data-theme="light"] .chip-toggle.active { color: #fff; }
+body[data-theme="light"] .btn-small.btn-accent { color: #fff; }

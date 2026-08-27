@@ -1,0 +1,50 @@
+/* ==========================================================================
+   responsive.css — tablet and mobile adaptations
+   ========================================================================== */
+
+/* Tablet: narrower two-column, tighter spacing */
+@media (max-width: 1080px) {
+  .layout { grid-template-columns: minmax(0, 1fr) minmax(280px, 0.9fr); gap: var(--space-3); padding: var(--space-3); }
+  .grid-fn { grid-template-columns: repeat(4, 1fr); }
+}
+
+/* Stacked layout: calculator on top, tools panel below */
+@media (max-width: 860px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+  .side-panel { max-height: 70vh; }
+  .grid-fn { grid-template-columns: repeat(6, 1fr); }
+}
+
+@media (max-width: 560px) {
+  .topbar { padding: 0 var(--space-3); }
+  .brand-name { display: none; }
+  .led-btn { padding: 6px 7px; font-size: 0.62rem; }
+  .layout { padding: var(--space-2); gap: var(--space-2); }
+  .keyboard { padding: var(--space-2); }
+  .grid-basic { gap: 6px; }
+  .btn { padding: 14px 2px; font-size: 0.85rem; }
+  .btn-digit { font-size: 1rem; }
+  .grid-sci { grid-template-columns: repeat(2, 1fr); }
+  .grid-fn { grid-template-columns: repeat(3, 1fr); }
+  .const-grid { grid-template-columns: repeat(2, 1fr); }
+  .result-value { font-size: 1.9rem; }
+  .expression-input { font-size: 1.1rem; }
+  .matrix-pair { flex-direction: column; }
+  .coef-row { flex-direction: column; }
+  .modal { max-height: 90vh; }
+}
+
+/* Extra small phones */
+@media (max-width: 380px) {
+  .grid-basic { grid-template-columns: repeat(5, 1fr); }
+  .btn { padding: 12px 2px; font-size: 0.78rem; }
+}
+
+/* Landscape phones: shrink display, keep keyboard usable */
+@media (max-height: 480px) and (orientation: landscape) {
+  .layout { grid-template-columns: 1.3fr 1fr; }
+  .side-panel { max-height: calc(100vh - var(--topbar-h) - var(--space-2) * 2); }
+  .result-value { font-size: 1.6rem; }
+}
