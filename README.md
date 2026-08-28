@@ -7,6 +7,7 @@ vectors, statistics, equation solving, unit conversion, and function
 graphing, with expression editing, calculation history, variables, and
 memory that all persist across page reloads.
 
+<<<<<<< HEAD
 **Two input modes:** Calcium opens in **Normal Mode** — press digits, pick
 an operation, press `=`, exactly like a phone calculator (including
 correct operator precedence, `%`, `±`, and repeated `=`). Tap **`fx
@@ -132,6 +133,10 @@ radians regardless of that setting — that's the standard convention for
 ---
 
 ## 3. Implemented features
+=======
+
+## Implemented features
+>>>>>>> 3722375943aca07be1412379e18c8ae268b86e62
 
 - **Core calculator** — all four operations, modulo (`mod`), percentage,
   sign toggle, parentheses, decimals, scientific notation, correct operator
@@ -188,48 +193,7 @@ radians regardless of that setting — that's the standard convention for
 - **Help modal** — reference sections for every mode, with worked examples.
 
 ---
-
-## 4. Testing checklist
-
-This project was verified with an automated Chromium (Playwright) pass
-exercising the actual UI, plus a standalone unit pass on the expression
-parser. Re-run manually with the checklist below after any change:
-
-### Mathematical correctness
-- [ ] `2 + 3 × 4` → `14` (precedence, not left-to-right)
-- [ ] `(2 + 3) × 4` → `20`
-- [ ] `sin(30)` in DEG → `0.5`
-- [ ] `sin(π/2)` in RAD → `1`
-- [ ] `log(100)` → `2`
-- [ ] `2^10` → `1024`
-- [ ] `√144` → `12`
-- [ ] `5!` → `120`
-- [ ] `10 mod 3` → `1`
-- [ ] `10C3` (`ncr(10,3)`) → `120`, `10P3` (`npr(10,3)`) → `720`
-- [ ] `1 / 0` → friendly "Cannot divide by zero", not `Infinity`/`NaN`
-- [ ] `((5 + 3) × 2)²` → `256` (nested expressions)
-- [ ] `-5 + 3` → `-2`, `(-3)^2` → `9` (negative numbers)
-- [ ] `3.5 × 2` → `7` (decimals, clean formatting)
-- [ ] `x = 10` then `x² + 5` → `105` (variables)
-- [ ] `det([[4,7],[2,6]])` → `10`, `[[2,0],[0,2]]⁻¹` → `[[0.5,0],[0,0.5]]`
-
-### UI
-- [ ] Desktop two-column layout renders correctly
-- [ ] Tablet and mobile (375px) layouts stack and stay usable
-- [ ] Dark and light themes both readable with correct contrast
-- [ ] Keyboard-only navigation (Tab, arrow keys, Enter, Escape) works
-      throughout, with a visible focus ring at every stop
-- [ ] Every button on every keypad tab does something (no dead buttons)
-
-### Persistence
-- [ ] Refresh the page: history remains
-- [ ] Refresh the page: variables remain
-- [ ] Refresh the page: theme remains
-- [ ] Refresh the page: precision/angle-mode settings remain
-
----
-
-## 5. Notes on scope
+## Notes on scope
 
 `matrix.js`'s determinant/inverse routines use cofactor expansion, which is
 correct and simple for the 2×2/3×3 sizes exposed in the UI (and works for
