@@ -40,6 +40,7 @@
 @media (max-width: 380px) {
   .grid-basic { grid-template-columns: repeat(5, 1fr); }
   .btn { padding: 12px 2px; font-size: 0.78rem; }
+  #input-mode-toggle { font-size: 0.68rem; }
 }
 
 /* Landscape phones: shrink display, keep keyboard usable */

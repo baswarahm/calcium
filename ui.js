@@ -17,6 +17,9 @@ const UI = (() => {
   let graphFns = []; // { id, expr, color, visible }
   let isPanning = false;
   let lastPointer = null;
+  // 'normal' = everyday phone-style calculator (default). 'expression' = the
+  // original free-text expression editor, for advanced users.
+  let inputMode = 'normal';
 
   function q(id) { return document.getElementById(id); }
 
@@ -31,6 +34,7 @@ const UI = (() => {
       helpBtn: q('help-btn'),
       settingsBtn: q('settings-btn'),
       copyResultBtn: q('copy-result-btn'),
+      inputModeToggle: q('input-mode-toggle'),
       constantsGrid: q('constants-grid'),
       historyList: q('history-list'),
       historyEmpty: q('history-empty'),
@@ -80,6 +84,7 @@ const UI = (() => {
 
   // -------------------------------------------------------------- rendering
   function renderExpression(state) {
+    if (inputMode !== 'expression') return;
     const { expression, cursor } = state;
     els.expressionInput.innerHTML = '';
     const before = document.createTextNode(expression.slice(0, cursor));
@@ -115,6 +120,7 @@ const UI = (() => {
   }
 
   function livePreview() {
+    if (inputMode !== 'expression') return;
     const state = Calculator.getState();
     if (!state.expression.trim()) {
       clearError();
@@ -137,6 +143,37 @@ const UI = (() => {
     }
   }
 
+  // ---------------------------------------------------------- Normal Mode
+  function renderNormal(state) {
+    if (inputMode !== 'normal') return;
+    els.expressionInput.textContent = state.topLine || '';
+    els.resultValue.textContent = state.bottomLine;
+    if (state.error) showError(state.error); else clearError();
+  }
+
+  function setInputMode(mode) {
+    if (mode === inputMode) return;
+    inputMode = mode;
+    document.body.dataset.inputMode = mode;
+    if (mode === 'expression') {
+      // Carry the Normal Mode value over as a fresh starting point.
+      const val = BasicCalc.getCurrentValue();
+      Calculator.setExpression(val ? Calculator.formatNumber(val) : '');
+      els.inputModeToggle.textContent = '🧮 Normal';
+      els.inputModeToggle.classList.add('is-expression');
+      clearError();
+      renderExpression(Calculator.getState());
+      livePreview();
+    } else {
+      const last = Calculator.getLastResult();
+      BasicCalc.clearAll();
+      if (typeof last === 'number' && Number.isFinite(last)) BasicCalc.seed(last);
+      els.inputModeToggle.textContent = 'fx Expression';
+      els.inputModeToggle.classList.remove('is-expression');
+      renderNormal(BasicCalc.getState());
+    }
+  }
+
   // ------------------------------------------------------------- constants
   function renderConstants() {
     const frag = document.createDocumentFragment();
@@ -155,8 +192,12 @@ const UI = (() => {
     btn.title = `${name} = ${value}`;
     btn.innerHTML = `<span class="const-symbol">${symbol}</span><span class="const-name">${name}</span><span class="const-value">${value}</span>`;
     btn.addEventListener('click', () => {
-      Calculator.insert(String(insertValue));
-      livePreview();
+      if (inputMode === 'normal') {
+        BasicCalc.insertValue(insertValue);
+      } else {
+        Calculator.insert(String(insertValue));
+        livePreview();
+      }
     });
     return btn;
   }
@@ -183,8 +224,14 @@ const UI = (() => {
         </div>`;
       li.addEventListener('click', (e) => {
         if (e.target.closest('button')) return;
-        Calculator.setExpression(item.expression);
-        livePreview();
+        if (inputMode === 'normal') {
+          const n = parseFloat(item.result);
+          BasicCalc.clearAll();
+          if (!Number.isNaN(n)) BasicCalc.seed(n);
+        } else {
+          Calculator.setExpression(item.expression);
+          livePreview();
+        }
       });
       els.historyList.appendChild(li);
     });
@@ -554,6 +601,21 @@ const UI = (() => {
     }
   }
 
+  // Advanced buttons (parentheses) tapped while in Normal Mode: hand the
+  // in-progress number over to Expression Mode instead of doing nothing.
+  function jumpToExpressionWith(paren) {
+    const val = BasicCalc.getCurrentValue();
+    setInputMode('expression');
+    if (paren === '(' && val) {
+      // Seed as "<value>(" is not valid syntax on its own; just open a
+      // fresh paren group so the advanced user can keep typing.
+      Calculator.setExpression('(');
+    } else {
+      Calculator.insert(paren);
+    }
+    livePreview();
+  }
+
   function playFeedback() {
     if (!Storage.get('soundEnabled', false)) return;
     // Lightweight haptic-style feedback via the vibration API where available; no audio asset dependency.
@@ -568,6 +630,8 @@ const UI = (() => {
     playFeedback();
     btn.classList.add('pressed');
     setTimeout(() => btn.classList.remove('pressed'), 120);
+
+    if (inputMode === 'normal') { onKeypadClickNormal(action, btn); return; }
 
     switch (action) {
       case 'digit': handleDigit(btn.dataset.value); break;
@@ -596,11 +660,81 @@ const UI = (() => {
     }
   }
 
+  // Maps the exact same keypad (Basic / Scientific / Functions tabs) onto
+  // BasicCalc's normal-calculator state machine instead of the expression
+  // text buffer. Binary "advanced" functions (nthRoot, logBase, randint)
+  // fall through to Expression Mode, since they need two typed operands.
+  const OP_SYMBOLS = { '+': '+', '-': '−', '*': '×', '/': '÷', '^': 'xʸ' };
+  function onKeypadClickNormal(action, btn) {
+    switch (action) {
+      case 'digit': BasicCalc.digit(btn.dataset.value); break;
+      case 'decimal': BasicCalc.decimal(); break;
+      case 'op': {
+        const v = btn.dataset.value;
+        BasicCalc.pressOperator(v, OP_SYMBOLS[v] || v);
+        break;
+      }
+      case 'mod': BasicCalc.pressOperator(' mod ', 'mod'); break;
+      case 'paren': jumpToExpressionWith(btn.dataset.value); return;
+      case 'func': {
+        const v = btn.dataset.value;
+        if (v === 'rand') { BasicCalc.insertValue(Math.random()); break; }
+        if (['npr', 'ncr', 'gcd', 'lcm'].includes(v)) {
+          setInputMode('expression');
+          Calculator.insert(`${v}(,)`);
+          Calculator.moveCursor(-2);
+          livePreview();
+          return;
+        }
+        BasicCalc.pressFunction(FUNC_KEY_MAP[v] || v);
+        break;
+      }
+      case 'power2': BasicCalc.pressFunction('sq'); break;
+      case 'power3': BasicCalc.pressFunction('cube'); break;
+      case 'reciprocal': BasicCalc.pressFunction('recip'); break;
+      case 'nthroot': case 'logb': case 'randint':
+        setInputMode('expression');
+        if (action === 'nthroot') { Calculator.insert('root(,)'); Calculator.moveCursor(-2); }
+        if (action === 'logb') { Calculator.insert('logb(,)'); Calculator.moveCursor(-2); }
+        if (action === 'randint') { Calculator.insert('randint(,)'); Calculator.moveCursor(-2); }
+        livePreview();
+        return;
+      case 'raw':
+        BasicCalc.pressFunction(btn.dataset.value === 'e^(' ? 'exp' : btn.dataset.value === '10^(' ? 'pow10' : 'sqrt');
+        break;
+      case 'factorial': BasicCalc.pressFunction('fact'); break;
+      case 'doubleFactorial': BasicCalc.pressFunction('dfact'); break;
+      case 'percent': BasicCalc.percent(); break;
+      case 'sign': BasicCalc.toggleSign(); break;
+      case 'clear-all': BasicCalc.clearAll(); break;
+      case 'backspace': BasicCalc.backspace(); break;
+      case 'equals': {
+        const result = BasicCalc.equals();
+        if (result && !result.ok) showError(result.error);
+        break;
+      }
+      case 'mem': handleMemory(btn.dataset.value); break;
+      default: break;
+    }
+    renderNormal(BasicCalc.getState());
+  }
+  const FUNC_KEY_MAP = {
+    sin: 'sin', cos: 'cos', tan: 'tan', asin: 'asin', acos: 'acos', atan: 'atan',
+    sinh: 'sinh', cosh: 'cosh', tanh: 'tanh', asinh: 'asinh', acosh: 'acosh', atanh: 'atanh',
+    sqrt: 'sqrt', cbrt: 'cbrt', ln: 'ln', log: 'log', log2: 'log2',
+    abs: 'abs', floor: 'floor', ceil: 'ceil', sign: 'signfn',
+  };
+
   function handleMemory(op) {
-    const current = Calculator.evaluate();
+    const current = inputMode === 'normal'
+      ? { ok: true, value: BasicCalc.getCurrentValue() }
+      : Calculator.evaluate();
     switch (op) {
       case 'MC': Memory.clear(); toast('Memory cleared'); break;
-      case 'MR': Calculator.insertResultAsNewExpression(Memory.recall()); livePreview(); break;
+      case 'MR':
+        if (inputMode === 'normal') { BasicCalc.insertValue(Memory.recall()); }
+        else { Calculator.insertResultAsNewExpression(Memory.recall()); livePreview(); }
+        break;
       case 'M+':
         if (current.ok) { Memory.add(current.value); toast('Added to memory'); } else { toast('Nothing to add to memory', 'error'); }
         break;
@@ -620,6 +754,8 @@ const UI = (() => {
     const active = document.activeElement;
     const inTextField = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT');
     if (inTextField) return; // let native field editing behave normally
+
+    if (inputMode === 'normal') { onKeyDownNormal(e); return; }
 
     const key = e.key;
     if (/^[0-9]$/.test(key)) { handleDigit(key); e.preventDefault(); return; }
@@ -651,6 +787,27 @@ const UI = (() => {
     }
   }
 
+  function onKeyDownNormal(e) {
+    const key = e.key;
+    if (/^[0-9]$/.test(key)) { BasicCalc.digit(key); e.preventDefault(); }
+    else if (key === '.') { BasicCalc.decimal(); e.preventDefault(); }
+    else if (key === '+') { BasicCalc.pressOperator('+', '+'); e.preventDefault(); }
+    else if (key === '-') { BasicCalc.pressOperator('-', '−'); e.preventDefault(); }
+    else if (key === '*') { BasicCalc.pressOperator('*', '×'); e.preventDefault(); }
+    else if (key === '/') { BasicCalc.pressOperator('/', '÷'); e.preventDefault(); }
+    else if (key === '^') { BasicCalc.pressOperator('^', 'xʸ'); e.preventDefault(); }
+    else if (key === '%') { BasicCalc.percent(); e.preventDefault(); }
+    else if (key === 'Enter' || key === '=') {
+      const result = BasicCalc.equals();
+      if (result && !result.ok) showError(result.error);
+      e.preventDefault();
+    } else if (key === 'Escape') { BasicCalc.clearAll(); e.preventDefault(); }
+    else if (key === 'Backspace') { BasicCalc.backspace(); e.preventDefault(); }
+    else if (key === 'Delete') { BasicCalc.clearAll(); e.preventDefault(); }
+    else { return; }
+    renderNormal(BasicCalc.getState());
+  }
+
   // ---------------------------------------------------------- panel/tabs
   function setupTabs(tabSelector, tabAttr, contentSelector, contentAttr) {
     document.querySelectorAll(tabSelector).forEach((tab) => {
@@ -672,9 +829,15 @@ const UI = (() => {
     renderConstants();
 
     Calculator.onChange(renderExpression);
-    Calculator.onChange((s) => renderAngleMode(s.angleMode));
-    renderExpression(Calculator.getState());
+    Calculator.onChange((s) => { if (inputMode === 'expression') renderAngleMode(s.angleMode); });
     renderAngleMode(Calculator.getAngleMode());
+
+    BasicCalc.onChange(renderNormal);
+
+    // Normal Mode is the default experience — a familiar, everyday
+    // calculator. Expression Mode (the free-text editor) is opt-in.
+    document.body.dataset.inputMode = inputMode;
+    renderNormal(BasicCalc.getState());
 
     Memory.onChange(renderMemory);
     renderMemory(Memory.getState());
@@ -688,6 +851,10 @@ const UI = (() => {
     document.querySelector('.keyboard').addEventListener('click', onKeypadClick);
     document.addEventListener('keydown', onKeyDown);
 
+    els.inputModeToggle.addEventListener('click', () => {
+      setInputMode(inputMode === 'normal' ? 'expression' : 'normal');
+    });
+
     setupTabs('.kbd-tab', 'target', '.kbd-group', 'group');
     setupTabs('.side-tab', 'panel', '.side-content', 'content');
 
@@ -695,6 +862,7 @@ const UI = (() => {
       btn.addEventListener('click', () => {
         Calculator.setAngleMode(btn.dataset.value);
         q('setting-angle').value = btn.dataset.value;
+        renderAngleMode(btn.dataset.value);
         livePreview();
       });
     });
@@ -788,7 +956,16 @@ const UI = (() => {
     els.variablesList.addEventListener('click', (e) => {
       const insertBtn = e.target.closest('[data-var-insert]');
       const delBtn = e.target.closest('[data-var-delete]');
-      if (insertBtn) { Calculator.insert(insertBtn.dataset.varInsert); livePreview(); }
+      if (insertBtn) {
+        if (inputMode === 'normal') {
+          const vars = Variables.getAll();
+          const v = vars[insertBtn.dataset.varInsert];
+          if (typeof v === 'number') BasicCalc.insertValue(v);
+        } else {
+          Calculator.insert(insertBtn.dataset.varInsert);
+          livePreview();
+        }
+      }
       if (delBtn) Variables.remove(delBtn.dataset.varDelete);
     });
     document.querySelectorAll('[data-action="clear-variables"]').forEach((btn) => {

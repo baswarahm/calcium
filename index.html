@@ -446,7 +446,7 @@ select { font-family: var(--font-body); cursor: pointer; }
 }
 .display-actions { display: flex; gap: var(--space-2); }
 
-.expression-wrap { min-height: 34px; display: flex; align-items: center; }
+.expression-wrap { min-height: 28px; display: flex; align-items: center; }
 .expression-input {
   font-family: var(--font-mono);
   font-size: clamp(1.15rem, 2.4vw, 1.5rem);
@@ -460,9 +460,16 @@ select { font-family: var(--font-body); cursor: pointer; }
   outline: none;
   caret-color: var(--accent);
 }
-.expression-input:empty::before {
+body[data-input-mode="expression"] .expression-input:empty::before {
   content: "0";
   color: var(--text-faint);
+}
+/* Normal Mode: the top line is a quiet running history, not an editable field */
+body[data-input-mode="normal"] .expression-input {
+  font-size: clamp(0.95rem, 2vw, 1.15rem);
+  color: var(--text-dim);
+  text-align: right;
+  min-height: 1.1em;
 }
 .expression-input .cursor {
   display: inline-block;
@@ -486,6 +493,10 @@ select { font-family: var(--font-body); cursor: pointer; }
   word-break: break-all;
   text-align: right;
 }
+body[data-input-mode="normal"] .result-value {
+  font-size: clamp(2.1rem, 7vw, 3.1rem);
+}
+#input-mode-toggle.is-expression { color: var(--accent-2); border-color: color-mix(in srgb, var(--accent-2) 45%, transparent); }
 
 .error-line {
   margin-top: var(--space-2);
@@ -725,6 +736,7 @@ body[data-theme="light"] .btn-small.btn-accent { color: #fff; }
 @media (max-width: 380px) {
   .grid-basic { grid-template-columns: repeat(5, 1fr); }
   .btn { padding: 12px 2px; font-size: 0.78rem; }
+  #input-mode-toggle { font-size: 0.68rem; }
 }
 
 /* Landscape phones: shrink display, keep keyboard usable */
@@ -786,6 +798,7 @@ body[data-theme="light"] .btn-small.btn-accent { color: #fff; }
         <div class="display-meta">
           <span id="active-mode-label" class="mode-chip">DEG</span>
           <div class="display-actions">
+            <button type="button" class="text-btn" id="input-mode-toggle" title="Switch input mode" aria-label="Switch between Normal and Expression input mode">fx Expression</button>
             <button type="button" class="text-btn" id="copy-result-btn" title="Copy result">Copy</button>
           </div>
         </div>
@@ -2076,6 +2089,416 @@ const Calculator = (() => {
 
 
 /**
+ * basiccalc.js
+ * Drives "Normal Mode": the everyday, phone-style calculator experience
+ * (press digits, choose an operation, press equals). It is a dedicated
+ * state manager — currentInput / previousValue / pendingOperator /
+ * waitingForOperand / lastOperator / lastOperand — completely separate
+ * from Expression Mode's free-text cursor buffer in calculator.js.
+ *
+ * Internally it still leans on the existing, battle-tested ExprParser to
+ * evaluate, so operator precedence, angle mode, and formatting all stay
+ * consistent with Expression Mode. Button presses just build up a small
+ * expression behind the scenes instead of eagerly combining numbers, which
+ * is what lets "2 + 3 × 4 =" correctly return 14 instead of 20.
+ */
+const UNARY_FUNCS = {
+  sin: { label: 'sin', tmpl: (v) => `sin(${v})` },
+  cos: { label: 'cos', tmpl: (v) => `cos(${v})` },
+  tan: { label: 'tan', tmpl: (v) => `tan(${v})` },
+  asin: { label: 'sin⁻¹', tmpl: (v) => `asin(${v})` },
+  acos: { label: 'cos⁻¹', tmpl: (v) => `acos(${v})` },
+  atan: { label: 'tan⁻¹', tmpl: (v) => `atan(${v})` },
+  sinh: { label: 'sinh', tmpl: (v) => `sinh(${v})` },
+  cosh: { label: 'cosh', tmpl: (v) => `cosh(${v})` },
+  tanh: { label: 'tanh', tmpl: (v) => `tanh(${v})` },
+  asinh: { label: 'sinh⁻¹', tmpl: (v) => `asinh(${v})` },
+  acosh: { label: 'cosh⁻¹', tmpl: (v) => `acosh(${v})` },
+  atanh: { label: 'tanh⁻¹', tmpl: (v) => `atanh(${v})` },
+  ln: { label: 'ln', tmpl: (v) => `ln(${v})` },
+  log: { label: 'log', tmpl: (v) => `log(${v})` },
+  log2: { label: 'log₂', tmpl: (v) => `log2(${v})` },
+  sqrt: { label: '√', tmpl: (v) => `sqrt(${v})` },
+  cbrt: { label: '∛', tmpl: (v) => `cbrt(${v})` },
+  exp: { label: 'eˣ', tmpl: (v) => `exp(${v})` },
+  pow10: { label: '10ˣ', tmpl: (v) => `10^(${v})` },
+  abs: { label: 'abs', tmpl: (v) => `abs(${v})` },
+  floor: { label: 'floor', tmpl: (v) => `floor(${v})` },
+  ceil: { label: 'ceil', tmpl: (v) => `ceil(${v})` },
+  signfn: { label: 'sign', tmpl: (v) => `sign(${v})` },
+  sq: { label: '²', suffix: true, tmpl: (v) => `(${v})^2` },
+  cube: { label: '³', suffix: true, tmpl: (v) => `(${v})^3` },
+  recip: { label: '1/x', tmpl: (v) => `1/(${v})`, noFirst: true },
+  fact: { label: '!', suffix: true, tmpl: (v) => `(${v})!` },
+  dfact: { label: '!!', suffix: true, tmpl: (v) => `(${v})!!` },
+};
+
+const BasicCalc = (() => {
+  // ---- state -------------------------------------------------------------
+  let segments = [];        // committed { kind:'number'|'op', engine, display }
+  let currentInput = '0';   // the operand currently being typed (bottom line)
+  let pendingFunction = null;      // function key waiting for its operand ("sin" then a number)
+  let lastFunctionDisplay = null;  // e.g. "√(25)" — display label for a just-wrapped number
+  let awaitingOperand = false;     // true right after an operator/function is committed
+  let justEvaluated = false;       // true right after "="
+  let lastOperatorEngine = null;   // for repeated "="
+  let lastOperandEngine = null;
+  let lastOperandDisplay = null;
+  let error = null;
+  let resultHistoryLine = ''; // top line kept visible after "=" until the user types again
+
+  const listeners = new Set();
+  function emit() { listeners.forEach((fn) => fn(getState())); }
+  function onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
+
+  function ctx() {
+    return {
+      variables: typeof Variables !== 'undefined' ? Variables.getAll() : {},
+      angleMode: Calculator.getAngleMode(),
+    };
+  }
+
+  function evalExpr(str) {
+    return ExprParser.evaluate(str, ctx());
+  }
+
+  function fmt(v) { return Calculator.formatNumber(v); }
+
+  // ---- helpers -------------------------------------------------------------
+  function appendDigit(current, d) {
+    if (current === '0' || current === '-0') {
+      return (current.startsWith('-') ? '-' : '') + d;
+    }
+    if (current.length >= 18) return current; // sane cap, avoid runaway overflow
+    return current + d;
+  }
+
+  function resetForFreshEntry() {
+    segments = [];
+    justEvaluated = false;
+    lastOperatorEngine = null;
+    lastOperandEngine = null;
+    lastOperandDisplay = null;
+    resultHistoryLine = '';
+  }
+
+  function currentOperandTokens() {
+    // Wrap the typed number with any pending function, and prefer a just
+    // applied function's display label ("√(25)") over the raw digits.
+    if (pendingFunction) {
+      const meta = UNARY_FUNCS[pendingFunction];
+      return {
+        engine: meta.tmpl(currentInput),
+        display: `${meta.label}(${currentInput})`,
+      };
+    }
+    if (lastFunctionDisplay) {
+      return { engine: currentInput, display: lastFunctionDisplay };
+    }
+    return { engine: currentInput, display: currentInput };
+  }
+
+  function commitCurrentOperand() {
+    const tok = currentOperandTokens();
+    segments.push({ kind: 'number', engine: tok.engine, display: tok.display });
+    pendingFunction = null;
+    lastFunctionDisplay = null;
+  }
+
+  function lastOpSegment() {
+    const last = segments[segments.length - 1];
+    return last && last.kind === 'op' ? last : null;
+  }
+
+  function lastNumberSegment() {
+    for (let i = segments.length - 1; i >= 0; i--) {
+      if (segments[i].kind === 'number') return segments[i];
+    }
+    return null;
+  }
+
+  // ---- state getters -------------------------------------------------------
+  function getState() {
+    let topLine = segments.map((s) => s.display).join(' ');
+    if (pendingFunction) {
+      topLine = (topLine ? topLine + ' ' : '') + `${UNARY_FUNCS[pendingFunction].label}(`;
+    } else if (!segments.length && justEvaluated && resultHistoryLine) {
+      topLine = resultHistoryLine;
+    } else if (!segments.length && lastFunctionDisplay && !awaitingOperand) {
+      topLine = lastFunctionDisplay;
+    }
+    return {
+      topLine,
+      bottomLine: currentInput,
+      error,
+      hasPendingOperator: !!lastOpSegment(),
+      pendingOperatorDisplay: lastOpSegment() ? lastOpSegment().display : null,
+      awaitingFunction: !!pendingFunction,
+    };
+  }
+
+  function getCurrentValue() {
+    const n = parseFloat(currentInput);
+    return Number.isNaN(n) ? 0 : n;
+  }
+
+  // ---- entry actions ---------------------------------------------------------
+  function digit(d) {
+    error = null;
+    if (justEvaluated) { resetForFreshEntry(); currentInput = d; awaitingOperand = false; emit(); return; }
+    if (awaitingOperand) { currentInput = d === '0' ? '0' : d; awaitingOperand = false; lastFunctionDisplay = null; emit(); return; }
+    currentInput = appendDigit(currentInput, d);
+    lastFunctionDisplay = null;
+    emit();
+  }
+
+  function decimal() {
+    error = null;
+    if (justEvaluated) { resetForFreshEntry(); currentInput = '0.'; awaitingOperand = false; emit(); return; }
+    if (awaitingOperand) { currentInput = '0.'; awaitingOperand = false; lastFunctionDisplay = null; emit(); return; }
+    if (!currentInput.includes('.')) currentInput += '.';
+    lastFunctionDisplay = null;
+    emit();
+  }
+
+  function toggleSign() {
+    error = null;
+    if (justEvaluated) justEvaluated = false;
+    if (currentInput === '0') { emit(); return; }
+    currentInput = currentInput.startsWith('-') ? currentInput.slice(1) : `-${currentInput}`;
+    emit();
+  }
+
+  function backspace() {
+    error = null;
+    if (pendingFunction && currentInput === '0') { pendingFunction = null; emit(); return; }
+    if (currentInput.length <= 1 || (currentInput.length === 2 && currentInput.startsWith('-'))) {
+      currentInput = '0';
+    } else {
+      currentInput = currentInput.slice(0, -1);
+    }
+    emit();
+  }
+
+  function clearAll() {
+    segments = [];
+    currentInput = '0';
+    pendingFunction = null;
+    lastFunctionDisplay = null;
+    awaitingOperand = false;
+    justEvaluated = false;
+    lastOperatorEngine = null;
+    lastOperandEngine = null;
+    lastOperandDisplay = null;
+    error = null;
+    resultHistoryLine = '';
+    emit();
+  }
+
+  function seed(value) {
+    clearAll();
+    currentInput = fmt(value);
+    emit();
+  }
+
+  // ---- operator ---------------------------------------------------------
+  function pressOperator(engineOp, displaySymbol) {
+    error = null;
+    if (justEvaluated) {
+      segments = [{ kind: 'number', engine: currentInput, display: currentInput }];
+      segments.push({ kind: 'op', engine: engineOp, display: displaySymbol });
+      justEvaluated = false;
+      lastOperatorEngine = null;
+      lastOperandEngine = null;
+      resultHistoryLine = '';
+      currentInput = '0';
+      awaitingOperand = true;
+      emit();
+      return;
+    }
+    if (awaitingOperand) {
+      const op = lastOpSegment();
+      if (op) { op.engine = engineOp; op.display = displaySymbol; }
+      else segments.push({ kind: 'op', engine: engineOp, display: displaySymbol });
+      emit();
+      return;
+    }
+    commitCurrentOperand();
+    segments.push({ kind: 'op', engine: engineOp, display: displaySymbol });
+    awaitingOperand = true;
+    currentInput = '0';
+    emit();
+  }
+
+  // ---- percent (context-aware) -------------------------------------------
+  function percent() {
+    error = null;
+    const op = lastOpSegment();
+    const val = parseFloat(currentInput) || 0;
+    let result = val / 100;
+    if (op && (op.engine === '+' || op.engine === '-')) {
+      const baseExpr = segments.slice(0, -1).map((s) => s.engine).join('');
+      try {
+        const base = baseExpr ? evalExpr(baseExpr) : val;
+        result = (base * val) / 100;
+      } catch (e) {
+        result = val / 100;
+      }
+    }
+    currentInput = fmt(result);
+    awaitingOperand = false;
+    pendingFunction = null;
+    lastFunctionDisplay = null;
+    emit();
+  }
+
+  // ---- scientific functions (wrap current number, or function-first) -----
+  function pressFunction(key) {
+    error = null;
+    const meta = UNARY_FUNCS[key];
+    if (!meta) return;
+
+    if (justEvaluated) {
+      resetForFreshEntry();
+      currentInput = '0';
+      if (!meta.noFirst && !meta.suffix) {
+        pendingFunction = key;
+        awaitingOperand = false;
+      } else {
+        // suffix-style / reciprocal have nothing to wrap yet — just reset.
+        awaitingOperand = false;
+      }
+      emit();
+      return;
+    }
+
+    const isFresh = awaitingOperand || (!segments.length && currentInput === '0' && !pendingFunction);
+    if (isFresh && !meta.noFirst && !meta.suffix) {
+      pendingFunction = key;
+      currentInput = '0';
+      awaitingOperand = false;
+      emit();
+      return;
+    }
+
+    // Apply immediately, wrapping whatever is currently displayed.
+    const original = currentInput;
+    let engineExpr = meta.tmpl(original);
+    if (pendingFunction) {
+      // A function was already pending (rare double-press); resolve inner first.
+      const innerMeta = UNARY_FUNCS[pendingFunction];
+      engineExpr = meta.tmpl(innerMeta.tmpl(original));
+    }
+    try {
+      const value = evalExpr(engineExpr);
+      currentInput = fmt(value);
+      lastFunctionDisplay = meta.suffix ? `${original}${meta.label}` : `${meta.label}(${original})`;
+      pendingFunction = null;
+      awaitingOperand = false;
+      emit();
+    } catch (err) {
+      error = err instanceof CalcError ? err.message : 'Invalid operation';
+      emit();
+    }
+  }
+
+  // ---- constants / memory recall: drop a literal value in as the operand -
+  function insertValue(value) {
+    error = null;
+    if (justEvaluated) resetForFreshEntry();
+    currentInput = fmt(value);
+    awaitingOperand = false;
+    pendingFunction = null;
+    lastFunctionDisplay = null;
+    justEvaluated = false;
+    emit();
+  }
+
+  // ---- equals -------------------------------------------------------------
+  function equals() {
+    error = null;
+    try {
+      let exprString;
+      let historyDisplay;
+
+      if (justEvaluated) {
+        if (lastOperatorEngine === null) return { ok: true, noop: true };
+        exprString = `(${currentInput})${lastOperatorEngine}(${lastOperandEngine})`;
+        historyDisplay = `${currentInput} ${segments.length ? '' : ''}${lastOperandDisplay}`.trim();
+        const opDisplay = lastOperatorEngine === '+' ? '+' : lastOperatorEngine === '-' ? '−'
+          : lastOperatorEngine === '*' ? '×' : lastOperatorEngine === '/' ? '÷'
+          : lastOperatorEngine.trim() === 'mod' ? 'mod' : lastOperatorEngine;
+        historyDisplay = `${currentInput} ${opDisplay} ${lastOperandDisplay}`;
+      } else if (awaitingOperand && lastOpSegment()) {
+        const dup = lastNumberSegment();
+        const dupEngine = dup ? dup.engine : currentInput;
+        const dupDisplay = dup ? dup.display : currentInput;
+        exprString = segments.map((s) => s.engine).join('') + `(${dupEngine})`;
+        historyDisplay = segments.map((s) => s.display).join(' ') + ` ${dupDisplay}`;
+        lastOperatorEngine = lastOpSegment().engine;
+        lastOperandEngine = dupEngine;
+        lastOperandDisplay = dupDisplay;
+      } else {
+        commitCurrentOperand();
+        exprString = segments.map((s) => s.engine).join('');
+        historyDisplay = segments.map((s) => s.display).join(' ');
+        const opSeg = [...segments].reverse().find((s) => s.kind === 'op');
+        if (opSeg) {
+          const idx = segments.indexOf(opSeg);
+          const numAfter = segments[idx + 1];
+          lastOperatorEngine = opSeg.engine;
+          lastOperandEngine = numAfter ? numAfter.engine : null;
+          lastOperandDisplay = numAfter ? numAfter.display : null;
+        } else {
+          lastOperatorEngine = null;
+          lastOperandEngine = null;
+          lastOperandDisplay = null;
+        }
+      }
+
+      if (!exprString || !exprString.trim()) return { ok: true, noop: true };
+
+      const value = evalExpr(exprString);
+      const display = fmt(value);
+
+      if (typeof History !== 'undefined') History.add(historyDisplay, display);
+
+      segments = [];
+      currentInput = display;
+      pendingFunction = null;
+      lastFunctionDisplay = null;
+      awaitingOperand = true;
+      justEvaluated = true;
+      resultHistoryLine = historyDisplay;
+      emit();
+      return { ok: true, value, display, expression: historyDisplay };
+    } catch (err) {
+      error = err instanceof CalcError ? err.message : 'Invalid expression';
+      emit();
+      return { ok: false, error };
+    }
+  }
+
+  return {
+    onChange,
+    getState,
+    getCurrentValue,
+    digit,
+    decimal,
+    toggleSign,
+    backspace,
+    clearAll,
+    seed,
+    pressOperator,
+    percent,
+    pressFunction,
+    insertValue,
+    equals,
+  };
+})();
+
+
+/**
  * memory.js
  * Classic calculator memory (MC/MR/M+/M-) plus a small set of named memory
  * slots for keeping a few labeled values around at once.
@@ -2837,6 +3260,9 @@ const UI = (() => {
   let graphFns = []; // { id, expr, color, visible }
   let isPanning = false;
   let lastPointer = null;
+  // 'normal' = everyday phone-style calculator (default). 'expression' = the
+  // original free-text expression editor, for advanced users.
+  let inputMode = 'normal';
 
   function q(id) { return document.getElementById(id); }
 
@@ -2851,6 +3277,7 @@ const UI = (() => {
       helpBtn: q('help-btn'),
       settingsBtn: q('settings-btn'),
       copyResultBtn: q('copy-result-btn'),
+      inputModeToggle: q('input-mode-toggle'),
       constantsGrid: q('constants-grid'),
       historyList: q('history-list'),
       historyEmpty: q('history-empty'),
@@ -2900,6 +3327,7 @@ const UI = (() => {
 
   // -------------------------------------------------------------- rendering
   function renderExpression(state) {
+    if (inputMode !== 'expression') return;
     const { expression, cursor } = state;
     els.expressionInput.innerHTML = '';
     const before = document.createTextNode(expression.slice(0, cursor));
@@ -2935,6 +3363,7 @@ const UI = (() => {
   }
 
   function livePreview() {
+    if (inputMode !== 'expression') return;
     const state = Calculator.getState();
     if (!state.expression.trim()) {
       clearError();
@@ -2957,6 +3386,37 @@ const UI = (() => {
     }
   }
 
+  // ---------------------------------------------------------- Normal Mode
+  function renderNormal(state) {
+    if (inputMode !== 'normal') return;
+    els.expressionInput.textContent = state.topLine || '';
+    els.resultValue.textContent = state.bottomLine;
+    if (state.error) showError(state.error); else clearError();
+  }
+
+  function setInputMode(mode) {
+    if (mode === inputMode) return;
+    inputMode = mode;
+    document.body.dataset.inputMode = mode;
+    if (mode === 'expression') {
+      // Carry the Normal Mode value over as a fresh starting point.
+      const val = BasicCalc.getCurrentValue();
+      Calculator.setExpression(val ? Calculator.formatNumber(val) : '');
+      els.inputModeToggle.textContent = '🧮 Normal';
+      els.inputModeToggle.classList.add('is-expression');
+      clearError();
+      renderExpression(Calculator.getState());
+      livePreview();
+    } else {
+      const last = Calculator.getLastResult();
+      BasicCalc.clearAll();
+      if (typeof last === 'number' && Number.isFinite(last)) BasicCalc.seed(last);
+      els.inputModeToggle.textContent = 'fx Expression';
+      els.inputModeToggle.classList.remove('is-expression');
+      renderNormal(BasicCalc.getState());
+    }
+  }
+
   // ------------------------------------------------------------- constants
   function renderConstants() {
     const frag = document.createDocumentFragment();
@@ -2975,8 +3435,12 @@ const UI = (() => {
     btn.title = `${name} = ${value}`;
     btn.innerHTML = `<span class="const-symbol">${symbol}</span><span class="const-name">${name}</span><span class="const-value">${value}</span>`;
     btn.addEventListener('click', () => {
-      Calculator.insert(String(insertValue));
-      livePreview();
+      if (inputMode === 'normal') {
+        BasicCalc.insertValue(insertValue);
+      } else {
+        Calculator.insert(String(insertValue));
+        livePreview();
+      }
     });
     return btn;
   }
@@ -3003,8 +3467,14 @@ const UI = (() => {
         </div>`;
       li.addEventListener('click', (e) => {
         if (e.target.closest('button')) return;
-        Calculator.setExpression(item.expression);
-        livePreview();
+        if (inputMode === 'normal') {
+          const n = parseFloat(item.result);
+          BasicCalc.clearAll();
+          if (!Number.isNaN(n)) BasicCalc.seed(n);
+        } else {
+          Calculator.setExpression(item.expression);
+          livePreview();
+        }
       });
       els.historyList.appendChild(li);
     });
@@ -3374,6 +3844,21 @@ const UI = (() => {
     }
   }
 
+  // Advanced buttons (parentheses) tapped while in Normal Mode: hand the
+  // in-progress number over to Expression Mode instead of doing nothing.
+  function jumpToExpressionWith(paren) {
+    const val = BasicCalc.getCurrentValue();
+    setInputMode('expression');
+    if (paren === '(' && val) {
+      // Seed as "<value>(" is not valid syntax on its own; just open a
+      // fresh paren group so the advanced user can keep typing.
+      Calculator.setExpression('(');
+    } else {
+      Calculator.insert(paren);
+    }
+    livePreview();
+  }
+
   function playFeedback() {
     if (!Storage.get('soundEnabled', false)) return;
     // Lightweight haptic-style feedback via the vibration API where available; no audio asset dependency.
@@ -3388,6 +3873,8 @@ const UI = (() => {
     playFeedback();
     btn.classList.add('pressed');
     setTimeout(() => btn.classList.remove('pressed'), 120);
+
+    if (inputMode === 'normal') { onKeypadClickNormal(action, btn); return; }
 
     switch (action) {
       case 'digit': handleDigit(btn.dataset.value); break;
@@ -3416,11 +3903,81 @@ const UI = (() => {
     }
   }
 
+  // Maps the exact same keypad (Basic / Scientific / Functions tabs) onto
+  // BasicCalc's normal-calculator state machine instead of the expression
+  // text buffer. Binary "advanced" functions (nthRoot, logBase, randint)
+  // fall through to Expression Mode, since they need two typed operands.
+  const OP_SYMBOLS = { '+': '+', '-': '−', '*': '×', '/': '÷', '^': 'xʸ' };
+  function onKeypadClickNormal(action, btn) {
+    switch (action) {
+      case 'digit': BasicCalc.digit(btn.dataset.value); break;
+      case 'decimal': BasicCalc.decimal(); break;
+      case 'op': {
+        const v = btn.dataset.value;
+        BasicCalc.pressOperator(v, OP_SYMBOLS[v] || v);
+        break;
+      }
+      case 'mod': BasicCalc.pressOperator(' mod ', 'mod'); break;
+      case 'paren': jumpToExpressionWith(btn.dataset.value); return;
+      case 'func': {
+        const v = btn.dataset.value;
+        if (v === 'rand') { BasicCalc.insertValue(Math.random()); break; }
+        if (['npr', 'ncr', 'gcd', 'lcm'].includes(v)) {
+          setInputMode('expression');
+          Calculator.insert(`${v}(,)`);
+          Calculator.moveCursor(-2);
+          livePreview();
+          return;
+        }
+        BasicCalc.pressFunction(FUNC_KEY_MAP[v] || v);
+        break;
+      }
+      case 'power2': BasicCalc.pressFunction('sq'); break;
+      case 'power3': BasicCalc.pressFunction('cube'); break;
+      case 'reciprocal': BasicCalc.pressFunction('recip'); break;
+      case 'nthroot': case 'logb': case 'randint':
+        setInputMode('expression');
+        if (action === 'nthroot') { Calculator.insert('root(,)'); Calculator.moveCursor(-2); }
+        if (action === 'logb') { Calculator.insert('logb(,)'); Calculator.moveCursor(-2); }
+        if (action === 'randint') { Calculator.insert('randint(,)'); Calculator.moveCursor(-2); }
+        livePreview();
+        return;
+      case 'raw':
+        BasicCalc.pressFunction(btn.dataset.value === 'e^(' ? 'exp' : btn.dataset.value === '10^(' ? 'pow10' : 'sqrt');
+        break;
+      case 'factorial': BasicCalc.pressFunction('fact'); break;
+      case 'doubleFactorial': BasicCalc.pressFunction('dfact'); break;
+      case 'percent': BasicCalc.percent(); break;
+      case 'sign': BasicCalc.toggleSign(); break;
+      case 'clear-all': BasicCalc.clearAll(); break;
+      case 'backspace': BasicCalc.backspace(); break;
+      case 'equals': {
+        const result = BasicCalc.equals();
+        if (result && !result.ok) showError(result.error);
+        break;
+      }
+      case 'mem': handleMemory(btn.dataset.value); break;
+      default: break;
+    }
+    renderNormal(BasicCalc.getState());
+  }
+  const FUNC_KEY_MAP = {
+    sin: 'sin', cos: 'cos', tan: 'tan', asin: 'asin', acos: 'acos', atan: 'atan',
+    sinh: 'sinh', cosh: 'cosh', tanh: 'tanh', asinh: 'asinh', acosh: 'acosh', atanh: 'atanh',
+    sqrt: 'sqrt', cbrt: 'cbrt', ln: 'ln', log: 'log', log2: 'log2',
+    abs: 'abs', floor: 'floor', ceil: 'ceil', sign: 'signfn',
+  };
+
   function handleMemory(op) {
-    const current = Calculator.evaluate();
+    const current = inputMode === 'normal'
+      ? { ok: true, value: BasicCalc.getCurrentValue() }
+      : Calculator.evaluate();
     switch (op) {
       case 'MC': Memory.clear(); toast('Memory cleared'); break;
-      case 'MR': Calculator.insertResultAsNewExpression(Memory.recall()); livePreview(); break;
+      case 'MR':
+        if (inputMode === 'normal') { BasicCalc.insertValue(Memory.recall()); }
+        else { Calculator.insertResultAsNewExpression(Memory.recall()); livePreview(); }
+        break;
       case 'M+':
         if (current.ok) { Memory.add(current.value); toast('Added to memory'); } else { toast('Nothing to add to memory', 'error'); }
         break;
@@ -3440,6 +3997,8 @@ const UI = (() => {
     const active = document.activeElement;
     const inTextField = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT');
     if (inTextField) return; // let native field editing behave normally
+
+    if (inputMode === 'normal') { onKeyDownNormal(e); return; }
 
     const key = e.key;
     if (/^[0-9]$/.test(key)) { handleDigit(key); e.preventDefault(); return; }
@@ -3471,6 +4030,27 @@ const UI = (() => {
     }
   }
 
+  function onKeyDownNormal(e) {
+    const key = e.key;
+    if (/^[0-9]$/.test(key)) { BasicCalc.digit(key); e.preventDefault(); }
+    else if (key === '.') { BasicCalc.decimal(); e.preventDefault(); }
+    else if (key === '+') { BasicCalc.pressOperator('+', '+'); e.preventDefault(); }
+    else if (key === '-') { BasicCalc.pressOperator('-', '−'); e.preventDefault(); }
+    else if (key === '*') { BasicCalc.pressOperator('*', '×'); e.preventDefault(); }
+    else if (key === '/') { BasicCalc.pressOperator('/', '÷'); e.preventDefault(); }
+    else if (key === '^') { BasicCalc.pressOperator('^', 'xʸ'); e.preventDefault(); }
+    else if (key === '%') { BasicCalc.percent(); e.preventDefault(); }
+    else if (key === 'Enter' || key === '=') {
+      const result = BasicCalc.equals();
+      if (result && !result.ok) showError(result.error);
+      e.preventDefault();
+    } else if (key === 'Escape') { BasicCalc.clearAll(); e.preventDefault(); }
+    else if (key === 'Backspace') { BasicCalc.backspace(); e.preventDefault(); }
+    else if (key === 'Delete') { BasicCalc.clearAll(); e.preventDefault(); }
+    else { return; }
+    renderNormal(BasicCalc.getState());
+  }
+
   // ---------------------------------------------------------- panel/tabs
   function setupTabs(tabSelector, tabAttr, contentSelector, contentAttr) {
     document.querySelectorAll(tabSelector).forEach((tab) => {
@@ -3492,9 +4072,15 @@ const UI = (() => {
     renderConstants();
 
     Calculator.onChange(renderExpression);
-    Calculator.onChange((s) => renderAngleMode(s.angleMode));
-    renderExpression(Calculator.getState());
+    Calculator.onChange((s) => { if (inputMode === 'expression') renderAngleMode(s.angleMode); });
     renderAngleMode(Calculator.getAngleMode());
+
+    BasicCalc.onChange(renderNormal);
+
+    // Normal Mode is the default experience — a familiar, everyday
+    // calculator. Expression Mode (the free-text editor) is opt-in.
+    document.body.dataset.inputMode = inputMode;
+    renderNormal(BasicCalc.getState());
 
     Memory.onChange(renderMemory);
     renderMemory(Memory.getState());
@@ -3508,6 +4094,10 @@ const UI = (() => {
     document.querySelector('.keyboard').addEventListener('click', onKeypadClick);
     document.addEventListener('keydown', onKeyDown);
 
+    els.inputModeToggle.addEventListener('click', () => {
+      setInputMode(inputMode === 'normal' ? 'expression' : 'normal');
+    });
+
     setupTabs('.kbd-tab', 'target', '.kbd-group', 'group');
     setupTabs('.side-tab', 'panel', '.side-content', 'content');
 
@@ -3515,6 +4105,7 @@ const UI = (() => {
       btn.addEventListener('click', () => {
         Calculator.setAngleMode(btn.dataset.value);
         q('setting-angle').value = btn.dataset.value;
+        renderAngleMode(btn.dataset.value);
         livePreview();
       });
     });
@@ -3608,7 +4199,16 @@ const UI = (() => {
     els.variablesList.addEventListener('click', (e) => {
       const insertBtn = e.target.closest('[data-var-insert]');
       const delBtn = e.target.closest('[data-var-delete]');
-      if (insertBtn) { Calculator.insert(insertBtn.dataset.varInsert); livePreview(); }
+      if (insertBtn) {
+        if (inputMode === 'normal') {
+          const vars = Variables.getAll();
+          const v = vars[insertBtn.dataset.varInsert];
+          if (typeof v === 'number') BasicCalc.insertValue(v);
+        } else {
+          Calculator.insert(insertBtn.dataset.varInsert);
+          livePreview();
+        }
+      }
       if (delBtn) Variables.remove(delBtn.dataset.varDelete);
     });
     document.querySelectorAll('[data-action="clear-variables"]').forEach((btn) => {

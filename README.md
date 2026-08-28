@@ -7,6 +7,14 @@ vectors, statistics, equation solving, unit conversion, and function
 graphing, with expression editing, calculation history, variables, and
 memory that all persist across page reloads.
 
+**Two input modes:** Calcium opens in **Normal Mode** — press digits, pick
+an operation, press `=`, exactly like a phone calculator (including
+correct operator precedence, `%`, `±`, and repeated `=`). Tap **`fx
+Expression`** in the display header to switch to **Expression Mode**, the
+original free-text editor for typing full expressions like
+`sin(30) × sqrt(25) + log(100)`, complete with cursor navigation and
+variables.
+
 ---
 
 ## 1. Running it
@@ -63,6 +71,9 @@ the browser's default sans-serif/monospace fonts).
     ├── parser.js           Tokenizer + recursive-descent parser + evaluator
     │                      (the "safe expression engine" — no eval())
     ├── calculator.js      Expression buffer, cursor, evaluate(), formatting
+    ├── basiccalc.js       Normal Mode state manager (digit/operator/equals
+    │                      button semantics); evaluates via parser.js so
+    │                      operator precedence stays correct under the hood
     ├── memory.js          MC / MR / M+ / M− plus named memory slots
     ├── variables.js       User variables (x = 10) with validation
     ├── history.js         Calculation history store (capped, persisted)

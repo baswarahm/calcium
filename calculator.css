@@ -27,7 +27,7 @@
 }
 .display-actions { display: flex; gap: var(--space-2); }
 
-.expression-wrap { min-height: 34px; display: flex; align-items: center; }
+.expression-wrap { min-height: 28px; display: flex; align-items: center; }
 .expression-input {
   font-family: var(--font-mono);
   font-size: clamp(1.15rem, 2.4vw, 1.5rem);
@@ -41,9 +41,16 @@
   outline: none;
   caret-color: var(--accent);
 }
-.expression-input:empty::before {
+body[data-input-mode="expression"] .expression-input:empty::before {
   content: "0";
   color: var(--text-faint);
+}
+/* Normal Mode: the top line is a quiet running history, not an editable field */
+body[data-input-mode="normal"] .expression-input {
+  font-size: clamp(0.95rem, 2vw, 1.15rem);
+  color: var(--text-dim);
+  text-align: right;
+  min-height: 1.1em;
 }
 .expression-input .cursor {
   display: inline-block;
@@ -67,6 +74,10 @@
   word-break: break-all;
   text-align: right;
 }
+body[data-input-mode="normal"] .result-value {
+  font-size: clamp(2.1rem, 7vw, 3.1rem);
+}
+#input-mode-toggle.is-expression { color: var(--accent-2); border-color: color-mix(in srgb, var(--accent-2) 45%, transparent); }
 
 .error-line {
   margin-top: var(--space-2);
